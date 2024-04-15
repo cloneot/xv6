@@ -182,6 +182,7 @@ UPROGS=\
 	_wc\
 	_zombie\
 	_test_yield\
+	_test_cprintf\
 
 fs.img: mkfs README $(UPROGS)
 	./mkfs fs.img README $(UPROGS)
@@ -255,6 +256,7 @@ EXTRA=\
 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
 	.gdbinit.tmpl gdbutil\
 	test_yield.c\
+	test_cprintf.c\
 
 dist:
 	rm -rf dist
