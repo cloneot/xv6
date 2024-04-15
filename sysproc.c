@@ -45,7 +45,7 @@ sys_getpid(void)
 int
 sys_getgpid(void)
 {
-  return myproc()->parent->pid;
+  return myproc()->parent->parent->pid;
 }
 
 int
