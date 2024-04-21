@@ -60,7 +60,7 @@ argptr(int n, char **pp, int size)
 {
   int i;
   struct proc *curproc = myproc();
- 
+
   if(argint(n, &i) < 0)
     return -1;
   if(size < 0 || (uint)i >= curproc->sz || (uint)i+size > curproc->sz)
@@ -103,6 +103,12 @@ extern int sys_unlink(void);
 extern int sys_wait(void);
 extern int sys_write(void);
 extern int sys_uptime(void);
+extern int sys_yield(void);
+extern int sys_getlev(void);
+extern int sys_setpriority(void);
+extern int sys_setmonopoly(void);
+extern int sys_monopolize(void);
+extern int sys_unmonopolize(void);
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -126,6 +132,12 @@ static int (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_yield]   sys_yield,
+[SYS_getlev]  sys_getlev,
+[SYS_setpriority] sys_setpriority,
+[SYS_setmonopoly] sys_setmonopoly,
+[SYS_monopolize] sys_monopolize,
+[SYS_unmonopolize] sys_unmonopolize,
 };
 
 void
