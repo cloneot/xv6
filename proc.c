@@ -649,7 +649,7 @@ int setmonopoly(int pid, int password)
 {
   const int sid = 2022095287;
   struct proc *p;
-  int found, size;
+  int found;
 
   if(password != sid)
     return -2;
@@ -668,12 +668,11 @@ int setmonopoly(int pid, int password)
     found = 1;
     queue_move(&L[p->qlev], &MoQ, p);
   }
-  size = queue_size(&MoQ, RUNNING) + queue_size(&MoQ, RUNNABLE) + queue_size(&MoQ, SLEEPING);
   release(&ptable.lock);
 
   if(!found)
     return -1;
-  return size;
+  return MoQ.size;
 }
 
 void monopolize(void)

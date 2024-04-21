@@ -80,16 +80,6 @@ void queue_init(struct queue *q, int qlev, int time_quantum, char* name)
 	safestrcpy(q->name, name, sizeof(q->name));
 }
 
-int queue_size(struct queue *q, enum procstate state)
-{
-	int i, size = 0;
-	for(i = q->front; i != q->rear; i = (i + 1) % NPROC) {
-		if(q->arr[i]->state == state)
-			size++;
-	}
-	return size;
-}
-
 void queue_move(struct queue *from, struct queue *to, struct proc *p)
 {
 	if(queue_delete(from, p) < 0)

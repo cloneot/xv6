@@ -22,6 +22,5 @@ int queue_delete(struct queue *q, struct proc *p);
 struct proc* queue_front(struct queue *q);
 struct proc* queue_top(struct queue *q);
 void queue_init(struct queue *q, int qlev, int time_quantum, char* name);
-int queue_size(struct queue *q, enum procstate state);
 void queue_move(struct queue *from, struct queue *to, struct proc *p);
 void queue_print(struct queue *q);
