@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "queue.h"
 
 struct {
   struct spinlock lock;
@@ -13,6 +14,12 @@ struct {
 } ptable;
 
 static struct proc *initproc;
+
+struct queue L[4];  // 4-level feedback queue
+struct queue MoQ;   // monopoly queue
+
+int mflag = 0;      // monopoly flag
+struct spinlock mflaglock;
 
 int nextpid = 1;
 extern void forkret(void);
@@ -23,7 +30,16 @@ static void wakeup1(void *chan);
 void
 pinit(void)
 {
+  int i;
+  char buf[10] = "L#";
+
   initlock(&ptable.lock, "ptable");
+  initlock(&mflaglock, "mflag lock");
+  for(i = 0; i < MLFQLEV; ++i) {
+    buf[1] = '0' + i;
+    queue_init(&L[i], i, 2 + 2*i, buf);
+  }
+  queue_init(&MoQ, MOQLEV, -1, "MoQ");
 }
 
 // Must be called with interrupts disabled
@@ -38,10 +54,10 @@ struct cpu*
 mycpu(void)
 {
   int apicid, i;
-  
+
   if(readeflags()&FL_IF)
     panic("mycpu called with interrupts enabled\n");
-  
+
   apicid = lapicid();
   // APIC IDs are not guaranteed to be contiguous. Maybe we should have
   // a reverse map, or reserve a register to store &cpus[i].
@@ -112,6 +128,10 @@ found:
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
 
+  p->priority = 0;
+  p->qlev = 0;
+  p->run_ticks = 0;
+
   return p;
 }
 
@@ -124,7 +144,7 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
-  
+
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
@@ -149,6 +169,7 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
+  queue_push(&L[p->qlev], p); // p->qlev = 0 beacuse of allocproc()
 
   release(&ptable.lock);
 }
@@ -215,6 +236,7 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  queue_push(&L[np->qlev], np); // np->qlev = 0 beacuse of allocproc()
 
   release(&ptable.lock);
 
@@ -275,7 +297,7 @@ wait(void)
   struct proc *p;
   int havekids, pid;
   struct proc *curproc = myproc();
-  
+
   acquire(&ptable.lock);
   for(;;){
     // Scan through table looking for exited children.
@@ -322,36 +344,66 @@ wait(void)
 void
 scheduler(void)
 {
-  struct proc *p;
+  int i;
+  struct proc *p = 0;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
-  for(;;){
-    // Enable interrupts on this processor.
+
+  for(;;) {
     sti();
-
-    // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+    // Monopoly Queue
+    acquire(&mflaglock);
+    if(mflag) {
+      // if(queue_isempty(&MoQ)) {
+      //   unmonopolize();
+      //   goto finally;
+      // }
+      int exists = 0;
+      for(p = ptable.proc; p < &ptable.proc[NPROC]; ++p) {
+        if(p->qlev != MOQLEV)
+          continue;
+        if(p->state != RUNNABLE && p->state != SLEEPING)
+          continue;
+        exists = 1;
+      }
+      release(&mflaglock);
+      if(!exists) {
+        unmonopolize();
+        goto finally;
+      }
+      p = queue_front(&MoQ);
+      goto context_switch;
     }
-    release(&ptable.lock);
+    release(&mflaglock);
 
+    // Multi Level Feedback Queue
+    // L0, L1, L2: Round Robin
+    for(i = 0; i <= 2; ++i) {
+      if(queue_isempty(&L[i]))
+        continue;
+      p = queue_front(&L[i]);
+      goto context_switch;
+    }
+    // L3: Priority Scheduling + Round Robin
+    if(!queue_isempty(&L[3])) {
+      p = queue_top(&L[3]);
+      goto context_switch;
+    }
+
+  context_switch:
+    if(!p || p->state != RUNNABLE)
+      goto finally;
+    c->proc = p;
+    switchuvm(p);
+    p->state = RUNNING;
+    swtch(&(c->scheduler), p->context);
+    switchkvm();
+    c->proc = 0;
+
+  finally:
+    release(&ptable.lock);
   }
 }
 
@@ -376,6 +428,34 @@ sched(void)
     panic("sched running");
   if(readeflags()&FL_IF)
     panic("sched interruptible");
+
+  if(p->state == RUNNABLE) {
+    switch(p->qlev) {
+    case 0:
+      queue_move(&L[0], &L[p->pid % 2 ? 1 : 2], p);
+      break;
+    case 1:
+    case 2:
+      queue_move(&L[p->qlev], &L[3], p);
+      break;
+    case 3:
+      queue_move(&L[3], &L[3], p);  // Pop and Push
+      if(p->priority > 0)
+        p->priority -= 1;
+      break;
+    case MOQLEV:
+      break;
+    default:
+      cprintf("sched: unknown qlev %d\n", p->qlev);
+      panic("sched: unknown qlev");
+    }
+  }
+  else if(p->state == SLEEPING || p->state == ZOMBIE) {
+    if(queue_delete(p->qlev == MOQLEV ? &MoQ : &L[p->qlev], p) < 0)
+      panic(p->state == SLEEPING ? "sched(sleep): delete failed" : "sched(zombie): delete failed");
+  }
+  p->run_ticks = 0;
+
   intena = mycpu()->intena;
   swtch(&p->context, mycpu()->scheduler);
   mycpu()->intena = intena;
@@ -418,7 +498,7 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  
+
   if(p == 0)
     panic("sleep");
 
@@ -460,8 +540,10 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
+      queue_push(p->qlev == MOQLEV ? &MoQ : &L[p->qlev], p);
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -486,8 +568,10 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING) {
         p->state = RUNNABLE;
+        queue_push(p->qlev == MOQLEV ? &MoQ : &L[p->qlev], p);
+      }
       release(&ptable.lock);
       return 0;
     }
@@ -531,4 +615,121 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+int getlev(void)
+{
+  struct proc *p = myproc();
+  if(p == 0)
+    return -1;
+  return p->qlev;
+}
+
+int setpriority(int pid, int priority)
+{
+  struct proc *p;
+  int found;
+
+  if(priority < 0 || priority > 10)
+    return -2;
+
+  found = 0;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; ++p) {
+    if(p->pid != pid)
+      continue;
+    found = 1;
+    p->priority = priority;
+  }
+  release(&ptable.lock);
+  return found ? 0 : -1;
+}
+
+int setmonopoly(int pid, int password)
+{
+  const int sid = 2022095287;
+  struct proc *p;
+  int found, size;
+
+  if(password != sid)
+    return -2;
+  if(pid == myproc()->pid)
+    return -4;
+
+  found = 0;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; ++p) {
+    if(p->pid != pid)
+      continue;
+    if(p->qlev == MOQLEV) {
+      release(&ptable.lock);
+      return -3;
+    }
+    found = 1;
+    queue_move(&L[p->qlev], &MoQ, p);
+  }
+  size = queue_size(&MoQ, RUNNING) + queue_size(&MoQ, RUNNABLE) + queue_size(&MoQ, SLEEPING);
+  release(&ptable.lock);
+
+  if(!found)
+    return -1;
+  return size;
+}
+
+void monopolize(void)
+{
+  acquire(&mflaglock);
+  mflag = 1;
+  release(&mflaglock);
+
+  yield();
+}
+
+void unmonopolize(void)
+{
+  acquire(&mflaglock);
+  mflag = 0;
+  release(&mflaglock);
+
+  acquire(&tickslock);
+  gticks = 0;
+  release(&tickslock);
+}
+
+void priorityboost(void)
+{
+  struct proc *p;
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; ++p) {
+    if(p->state == UNUSED || p->state == EMBRYO || p->state == ZOMBIE)
+      continue;
+    if(p->qlev == MOQLEV)
+      continue;
+
+    p->run_ticks = 0;
+    if(p->state == SLEEPING) {
+      p->qlev = 0;
+      continue;
+    }
+    queue_move(&L[p->qlev], &L[0], p);
+  }
+  release(&ptable.lock);
+}
+
+int istimerunout(struct proc *p)
+{
+  int flag;
+  acquire(&ptable.lock);
+  flag = (p->qlev == MOQLEV ?
+    0 : p->run_ticks >= L[p->qlev].time_quantum);
+  release(&ptable.lock);
+  return flag;
+}
+
+int ismonopolized(void)
+{
+  acquire(&mflaglock);
+  int flag = mflag;
+  release(&mflaglock);
+  return flag;
 }

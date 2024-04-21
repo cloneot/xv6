@@ -12,3 +12,6 @@
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 #define FSSIZE       1000  // size of file system in blocks
 
+#define MLFQLEV      4	// number of levels in MLFQ
+#define MOQLEV       99 // level of MoQ
+#define DEBUG_MODE   0	// 1: debug mode, 0: normal mode
