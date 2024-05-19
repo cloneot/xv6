@@ -291,7 +291,7 @@ wait(void)
     // Scan through table looking for exited children.
     havekids = 0;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->parent != curproc)
+      if(p->parent != curproc || !p->is_master)
         continue;
       havekids = 1;
       if(p->state == ZOMBIE){
@@ -575,7 +575,6 @@ found:
   // Leave room for trap frame.
   sp -= sizeof *p->tf;
   p->tf = (struct trapframe*)sp;
-  *(p->tf) = *(curproc->tf);
 
   // Set up new context to start executing at forkret,
   // which returns to trapret.
@@ -610,10 +609,10 @@ thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   // 2. set proc state
   //   - set sz, pid, parent
   //   - copy pgdir address
-  // nt->sz = curthread->master->sz;
   nt->pid = curthread->pid;
   nt->parent = curthread->parent;
   nt->pgdir = curthread->pgdir;
+  *(nt->tf) = *(curthread->tf);
 
 
   // 3. initilize user stack
@@ -638,8 +637,6 @@ thread_create(thread_t *thread, void *(*start_routine)(void *), void *arg)
   safestrcpy(nt->name, curthread->name, sizeof(curthread->name));
   nt->tf->eip = (uint)start_routine;
   nt->tf->esp = sp;
-  // nt->master->sz = nt->sz;
-  // nt->sz = nt->master->sz;
 
 
   // 5. copy file descriptors
@@ -700,7 +697,7 @@ thread_join(thread_t tid, void **retval)
 {
   struct proc *p;
   struct proc *taddr = 0;
-  struct proc *curproc = myproc();
+  struct proc *curthread = myproc();
 
   acquire(&ptable.lock);
   // 1. find thread address whose tid is `tid` argument
@@ -710,11 +707,11 @@ thread_join(thread_t tid, void **retval)
     taddr = p;
     break;
   }
-  if(!taddr || curproc->pid != taddr->pid)
+  if(!taddr || curthread->pid != taddr->pid)
     return -1;
 
   for(;;){
-    if(taddr->tid != tid || curproc->killed){
+    if(taddr->tid != tid || curthread->killed){
       release(&ptable.lock);
       return -1;
     }
@@ -728,7 +725,6 @@ thread_join(thread_t tid, void **retval)
   }
   kfree(taddr->kstack);
   taddr->kstack = 0;
-  // freevm(taddr->pgdir);
   taddr->pid = 0;
   taddr->parent = 0;
   taddr->name[0] = 0;
@@ -750,11 +746,11 @@ thread_clear()
 {
   int fd;
   struct proc *p;
-  struct proc *curproc = myproc();
+  struct proc *curthread = myproc();
 
   acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; ++p){
-    if(p->pid != curproc->pid || p == curproc)
+    if(p->pid != curthread->pid || p == curthread)
       continue;
     for(fd = 0; fd < NOFILE; fd++){
       if(p->ofile[fd]){
