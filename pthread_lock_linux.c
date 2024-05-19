@@ -13,9 +13,11 @@ void unlock(int);
 // for checking (1) whether it is deadlock (2) time measurement
 // #define DEBUG 1
 
+#ifdef DEBUG
 // for time measurement
 long long start_ms, end_ms;
 struct timespec start, end;
+#endif
 
 int entering[NUM_THREADS];
 int number[NUM_THREADS];
@@ -67,9 +69,10 @@ int main() {
     pthread_t threads[n];
     int tids[n];
 
-    // clock_t start = clock();
-    clock_gettime(CLOCK_REALTIME, &start);
+#ifdef DEBUG
+    clock_gettime(0, &start);
     start_ms = (start.tv_sec * 1000) + (start.tv_nsec / 1e6);
+#endif
     for (int i = 0; i < n; i++) {
         tids[i] = i;
         pthread_create(&threads[i], NULL, thread_func, &tids[i]);
@@ -78,9 +81,10 @@ int main() {
     for (int i = 0; i < n; i++) {
         pthread_join(threads[i], NULL);
     }
-    // clock_t end = clock();
-    clock_gettime(CLOCK_REALTIME, &end);
+#ifdef DEBUG
+    clock_gettime(0, &end);
     end_ms = (end.tv_sec * 1000) + (end.tv_nsec / 1e6);
+#endif
 
     printf("shared: %d\n", shared_resource);
 #ifdef DEBUG
