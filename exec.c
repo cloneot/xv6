@@ -19,6 +19,11 @@ exec(char *path, char **argv)
   pde_t *pgdir, *oldpgdir;
   struct proc *curproc = myproc();
 
+  if(thread_clear() != 0){
+    cprintf("exec: thread_clear failed\n");
+    return -1;
+  }
+
   begin_op();
 
   if((ip = namei(path)) == 0){
