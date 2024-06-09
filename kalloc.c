@@ -21,6 +21,8 @@ struct {
   struct spinlock lock;
   int use_lock;
   struct run *freelist;
+  uint free_cnt;
+  uint refc[PHYSTOP>>PTXSHIFT];
 } kmem;
 
 // Initialization happens in two phases.
@@ -33,6 +35,7 @@ kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
+  kmem.free_cnt = 0;
   freerange(vstart, vend);
 }
 
@@ -48,8 +51,15 @@ freerange(void *vstart, void *vend)
 {
   char *p;
   p = (char*)PGROUNDUP((uint)vstart);
-  for(; p + PGSIZE <= (char*)vend; p += PGSIZE)
-    kfree(p);
+  for(; p + PGSIZE <= (char*)vend; p += PGSIZE) {
+    if(kmem.use_lock)
+      acquire(&kmem.lock);
+    kmem.refc[V2P(p)>>PTXSHIFT] = 1; // for kfree(p)
+    if(kmem.use_lock)
+      release(&kmem.lock);
+
+    kfree(p);                     // after this, refc will be 0
+  }
 }
 //PAGEBREAK: 21
 // Free the page of physical memory pointed at by v,
@@ -64,14 +74,20 @@ kfree(char *v)
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
-
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = (struct run*)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+
+  if(kmem.refc[V2P(v)>>PTXSHIFT] < 0)
+    panic("kfree: refc < 0");
+
+  if(--kmem.refc[V2P(v)>>PTXSHIFT] == 0) {
+    memset(v, 1, PGSIZE);
+    kmem.free_cnt += 1;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
+
   if(kmem.use_lock)
     release(&kmem.lock);
 }
@@ -87,6 +103,12 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = kmem.freelist;
+
+  if(kmem.refc[V2P(r)>>PTXSHIFT] != 0)
+    panic("kalloc: refc != 0");
+  kmem.refc[V2P(r)>>PTXSHIFT] += 1;
+  kmem.free_cnt -= 1;
+
   if(r)
     kmem.freelist = r->next;
   if(kmem.use_lock)
@@ -94,3 +116,60 @@ kalloc(void)
   return (char*)r;
 }
 
+void
+incr_refc(uint pa)
+{
+  if(kmem.use_lock)
+    acquire(&kmem.lock);
+
+  if(pa >= PHYSTOP)
+    panic("incr_refc");
+  kmem.refc[pa>>PTXSHIFT] += 1;
+
+  if(kmem.use_lock)
+    release(&kmem.lock);
+}
+
+void
+decr_refc(uint pa)
+{
+  if(kmem.use_lock)
+    acquire(&kmem.lock);
+
+  if(pa >= PHYSTOP)
+    panic("decr_refc");
+  kmem.refc[pa>>PTXSHIFT] -= 1;
+
+  if(kmem.use_lock)
+    release(&kmem.lock);
+}
+
+int
+get_refc(uint pa)
+{
+  int ret = -1;
+
+  if(kmem.use_lock)
+    acquire(&kmem.lock);
+
+  if(pa >= PHYSTOP)
+    panic("get_refc");
+  ret = kmem.refc[pa>>PTXSHIFT];
+
+  if(kmem.use_lock)
+    release(&kmem.lock);
+
+  return ret;
+}
+
+int
+countfp(void)
+{
+  int fc = -1;
+
+  acquire(&kmem.lock);
+  fc = kmem.free_cnt;
+  release(&kmem.lock);
+
+	return fc;
+}

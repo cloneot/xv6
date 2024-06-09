@@ -318,7 +318,6 @@ copyuvm(pde_t *pgdir, uint sz)
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
 
   if((d = setupkvm()) == 0)
     return 0;
@@ -327,16 +326,16 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
+    *pte &= ~PTE_W;
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
+
+    incr_refc(pa);
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) {
       goto bad;
     }
   }
+  lcr3(V2P(pgdir));
   return d;
 
 bad:
@@ -392,3 +391,74 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 //PAGEBREAK!
 // Blank page.
 
+int
+countvp(void)
+{
+  int va, count = 0;
+  struct proc *p = myproc();
+  for(va = 0; va < p->sz; va += PGSIZE) {
+    count += 1;
+  }
+	return count;
+}
+
+int
+countpp(void)
+{
+  int va, count = 0;
+  struct proc *p = myproc();
+  for(va = 0; va < p->sz; va += PGSIZE) {
+    pte_t *pte = walkpgdir(p->pgdir, (void*)va, 0);
+    if(pte && (*pte & PTE_P))
+      count += 1;
+  }
+  return count;
+}
+
+int
+countptp(void)
+{
+  int i, count = 0;
+  pde_t *pde;
+  struct proc *p = myproc();
+
+  count += 1; // directory
+  for(i = 0; i < NPDENTRIES; i += 1) {
+    pde = &(p->pgdir[i]);
+    if(*pde & PTE_P)
+      count += 1; // table
+  }
+  return count;
+}
+
+extern char end[];
+
+void
+CoW_handler(void)
+{
+  uint va = rcr2();
+  if(va >= (uint)P2V(PHYSTOP))
+    panic("CoW_handler: cr2 out of range\n");
+
+  struct proc *p = myproc();
+  pde_t *pgdir = p->pgdir;
+  pte_t *pte;
+  if((pte = walkpgdir(pgdir, (void*)va, 0)) == 0)
+    panic("CoW_handler: cr2 invalid address\n");
+
+  uint pa = PTE_ADDR(*pte);
+  uint flags = PTE_FLAGS(*pte);
+  if(get_refc(pa) == 1) {
+    *pte |= PTE_W;
+    lcr3(V2P(pgdir));
+    return;
+  }
+
+  decr_refc(pa);
+  char *mem;
+  if((mem = kalloc()) == 0)
+    panic("CoW_handler: kalloc failed\n");
+  memmove(mem, (char*)P2V(pa), PGSIZE);
+  *pte = V2P(mem) | flags | PTE_W;
+  lcr3(V2P(pgdir));
+}
